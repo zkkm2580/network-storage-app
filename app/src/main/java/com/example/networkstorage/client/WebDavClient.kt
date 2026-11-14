@@ -149,11 +149,11 @@ class WebDavClient(
         }
     }
 
-    private fun auth(b: Request.Builder): Request {
-        if (username.isNotEmpty()) {
-            b.header("Authorization", Credentials.basic(username, password))
-        }
-        return b.build()
+    private fun auth(request: Request): Request {
+        if (username.isEmpty()) return request
+        return request.newBuilder()
+            .header("Authorization", Credentials.basic(username, password))
+            .build()
     }
 
     private fun urlOf(path: String): String {
