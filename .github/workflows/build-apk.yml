@@ -12,7 +12,8 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # ubuntu-22.04 ships a working Android SDK + sdkmanager combination.
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout
@@ -24,8 +25,26 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Ensure Android SDK packages
+        run: |
+          set -e
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK"
+          echo "--- preinstalled platforms ---"
+          ls "$SDK/platforms" 2>/dev/null || true
+
+          SDKMANAGER="$(command -v sdkmanager || echo "$SDK/cmdline-tools/latest/bin/sdkmanager")"
+          echo "sdkmanager=$SDKMANAGER"
+
+          if [ -x "$SDKMANAGER" ] || command -v sdkmanager >/dev/null 2>&1; then
+            yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+            "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null
+          else
+            echo "sdkmanager unavailable, relying on preinstalled SDK"
+          fi
+
+          echo "--- final platforms ---"
+          ls "$SDK/platforms" || true
 
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
