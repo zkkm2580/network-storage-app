@@ -8,16 +8,26 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 网络存储配置的持久化。使用 EncryptedSharedPreferences，
- * 由 Android Keystore 托管的 AES-256 主密钥加密全部键值，
- * 密码不会以明文形式落盘。
+ * 网络存储配置的持久化。全部键值由 Android Keystore 托管的 AES-256 主密钥加密。
+ * 若 Keystore 不可用，只退化为「内存态」并对外暴露 isMemoryOnly，
+ * 绝不把密码以明文写入磁盘。
  */
 class StorageRepository(context: Context) {
 
-    private val prefs: SharedPreferences = createEncryptedPrefs(context.applicationContext)
+    @Volatile
+    private var memoryOnly: String? = null
+
+    private val prefs: SharedPreferences? = try {
+        createEncryptedPrefs(context.applicationContext)
+    } catch (e: Exception) {
+        null
+    }
+
+    /** true 表示设备加密不可用：配置只在本次进程内有效，退出即丢失。 */
+    val isMemoryOnly: Boolean get() = prefs == null
 
     fun getAll(): List<StorageAccount> {
-        val raw = prefs.getString(KEY_ACCOUNTS, null) ?: return emptyList()
+        val raw = prefs?.getString(KEY_ACCOUNTS, null) ?: memoryOnly ?: return emptyList()
         return try {
             val arr = JSONArray(raw)
             val out = ArrayList<StorageAccount>(arr.length())
@@ -48,25 +58,25 @@ class StorageRepository(context: Context) {
     private fun write(list: List<StorageAccount>) {
         val arr = JSONArray()
         list.forEach { arr.put(it.toJson()) }
-        prefs.edit().putString(KEY_ACCOUNTS, arr.toString()).apply()
+        val json = arr.toString()
+        val target = prefs
+        if (target != null) {
+            target.edit().putString(KEY_ACCOUNTS, json).apply()
+        } else {
+            memoryOnly = json
+        }
     }
 
+    @Suppress("DEPRECATION")
     private fun createEncryptedPrefs(context: Context): SharedPreferences {
-        return try {
-            @Suppress("DEPRECATION")
-            val masterKeyAlias = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
-            @Suppress("DEPRECATION")
-            EncryptedSharedPreferences.create(
-                FILE_NAME,
-                masterKeyAlias,
-                context,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-            )
-        } catch (e: Exception) {
-            // 极少数设备 Keystore 异常时降级，保证 UI 可用（不推荐但避免崩溃）
-            context.getSharedPreferences(FILE_NAME + "_fallback", Context.MODE_PRIVATE)
-        }
+        val masterKeyAlias = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
+        return EncryptedSharedPreferences.create(
+            FILE_NAME,
+            masterKeyAlias,
+            context,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
     }
 
     private companion object {
@@ -74,7 +84,3 @@ class StorageRepository(context: Context) {
         const val KEY_ACCOUNTS = "accounts"
     }
 }
-
-// 便于 UI 层直接使用
-fun JSONObject.optJSONObjectOrNull(name: String): JSONObject? =
-    if (has(name) && !isNull(name)) optJSONObject(name) else null

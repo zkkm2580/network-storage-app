@@ -5,35 +5,35 @@ import com.jcraft.jsch.ChannelSftp
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
 import java.io.ByteArrayInputStream
+import java.io.File
 import java.io.InputStream
 import java.util.Locale
 import java.util.Properties
 import java.util.Vector
 
 /**
- * SFTP 客户端（基于 JSch）。
- *
- * @param basePath 登录后使用的根目录，例如 "/volume1" 或 "/home/user"
+ * SFTP 客户端（JSch / mwiede fork）。
+ * 主机密钥采用 TOFU：首次连接锁定公钥并写入应用私有 known_hosts，
+ * 之后以 StrictHostKeyChecking=yes 严格校验，密钥变更即拒绝连接。
  */
 class SftpClient(
     private val host: String,
     private val port: Int,
     private val username: String,
     private val password: String,
-    private val basePath: String
+    private val basePath: String,
+    private val hostKeyStoreDir: File? = null
 ) : IStorageClient {
 
     private var session: Session? = null
     private var channel: ChannelSftp? = null
 
-    override fun connect(): Boolean {
-        return try {
-            ensureChannel()
-            true
-        } catch (e: Exception) {
-            disconnect()
-            false
-        }
+    override fun connect(): Boolean = try {
+        ensureChannel()
+        true
+    } catch (e: Exception) {
+        disconnect()
+        false
     }
 
     override fun listFiles(path: String): List<RemoteFile> {
@@ -46,13 +46,13 @@ class SftpClient(
         val out = ArrayList<RemoteFile>()
         for (entry in entries) {
             val name = entry.filename ?: continue
-            if (name == "." || name == "..") continue
+            if (!isSafeEntryName(name)) continue
             val attrs = entry.attrs ?: continue
             val isDir = attrs.isDir
             out.add(
                 RemoteFile(
                     name = name,
-                    path = joinPath(path, name),
+                    path = joinRemotePath(path, name),
                     size = if (isDir) 0L else attrs.size,
                     isDirectory = isDir,
                     lastModified = attrs.mTime.toLong() * 1000L
@@ -64,9 +64,7 @@ class SftpClient(
     }
 
     override fun openInputStream(path: String): InputStream {
-        val sftp = ensureChannel()
-        val remote = sftp.get(toAbsolute(path))
-        remote.use { return ByteArrayInputStream(it.readBytes()) }
+        return ensureChannel().get(toAbsolute(path))
     }
 
     override fun upload(path: String, data: ByteArray): Boolean {
@@ -83,7 +81,6 @@ class SftpClient(
             sftp.mkdir(toAbsolute(path))
             true
         } catch (e: Exception) {
-            // 目录已存在
             try {
                 sftp.stat(toAbsolute(path)).isDir
             } catch (ignored: Exception) {
@@ -111,11 +108,11 @@ class SftpClient(
     override fun disconnect() {
         try {
             channel?.disconnect()
-        } catch (_: Exception) {
+        } catch (ignored: Exception) {
         }
         try {
             session?.disconnect()
-        } catch (_: Exception) {
+        } catch (ignored: Exception) {
         }
         channel = null
         session = null
@@ -128,46 +125,72 @@ class SftpClient(
         if (current != null && current.isConnected) return current
         disconnect()
 
+        val dir = hostKeyStoreDir
+            ?: throw StorageException("SFTP 缺少主机密钥存储目录，已拒绝连接")
+        val khFile = try {
+            if (!dir.exists() && !dir.mkdirs()) {
+                throw StorageException("无法创建主机密钥目录")
+            }
+            File(dir, "known_hosts")
+        } catch (e: Exception) {
+            throw StorageException("无法准备主机密钥存储: ${e.message}", e)
+        }
+
         val jsch = JSch()
+        val hasPinnedKeys = khFile.exists() && khFile.length() > 0L
+        if (hasPinnedKeys) {
+            try {
+                jsch.setKnownHosts(khFile.absolutePath)
+            } catch (e: Exception) {
+                throw StorageException("无法读取主机密钥库: ${e.message}", e)
+            }
+        }
+
         val sess = jsch.getSession(username, host, port)
         sess.setPassword(password)
         val config = Properties()
-        config["StrictHostKeyChecking"] = "no"
+        config["StrictHostKeyChecking"] = if (hasPinnedKeys) "yes" else "no"
         config["PreferredAuthentications"] = "password,keyboard-interactive"
         sess.setConfig(config)
         sess.timeout = 20000
         sess.connect(20000)
 
+        if (!hasPinnedKeys) {
+            val hk = sess.hostKey
+            if (hk == null) {
+                sess.disconnect()
+                throw StorageException("未能获取服务器主机密钥，已取消连接")
+            }
+            val label = if (port == 22) host else "[$host]:$port"
+            try {
+                khFile.appendText("$label ${hk.type} ${hk.key}\n")
+            } catch (e: Exception) {
+                sess.disconnect()
+                throw StorageException("无法保存主机密钥，已取消连接: ${e.message}", e)
+            }
+        }
+
         val ch = sess.openChannel("sftp")
         ch.connect(20000)
         val sftp = ch as ChannelSftp
-
-        val base = basePath.trim().ifEmpty { "/" }
-        try {
-            sftp.cd(base)
-        } catch (e: Exception) {
-            // 目录不存在时退回用户家目录
-        }
 
         session = sess
         channel = sftp
         return sftp
     }
 
+    /** 统一按绝对路径寻址，不再依赖 cd()，避免相对 basePath 造成双重前缀。 */
     private fun toAbsolute(path: String): String {
-        val base = basePath.trim().trimEnd('/')
-        val p = path.trim()
-        return when {
-            p == "/" || p.isEmpty() -> base.ifEmpty { "/" }
-            base.isEmpty() -> p
-            else -> base + p
+        val rawBase = basePath.trim()
+        val base = when {
+            rawBase.isEmpty() || rawBase == "/" -> ""
+            rawBase.startsWith("/") -> rawBase.trimEnd('/')
+            else -> "/" + rawBase.trimEnd('/')
         }
-    }
-
-    private companion object {
-        fun joinPath(parent: String, name: String): String {
-            val p = parent.trimEnd('/')
-            return if (p.isEmpty()) "/$name" else "$p/$name"
-        }
+        val raw = path.trim()
+        val rel = if (raw.startsWith("/")) raw else "/$raw"
+        val clean = if (rel.length > 1) rel.trimEnd('/') else rel
+        if (clean == "/") return base.ifEmpty { "/" }
+        return base + clean
     }
 }

@@ -7,23 +7,24 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.w3c.dom.Element
+import org.xml.sax.InputSource
 import java.io.ByteArrayInputStream
+import java.io.FilterInputStream
 import java.io.InputStream
 import java.io.StringReader
 import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.TimeUnit
+import javax.xml.XMLConstants
+import javax.xml.parsers.DocumentBuilder
 import javax.xml.parsers.DocumentBuilderFactory
-import org.xml.sax.InputSource
 
 /**
- * WebDAV 客户端（基于 OkHttp + 标准 WebDAV 方法 PROPFIND/MKCOL/PUT/DELETE）。
- *
- * @param baseUrl 形如 https://dav.example.com/dav 的基础地址，可带端口
- * @param username Basic 认证用户名
- * @param password Basic 认证密码
+ * WebDAV 客户端（OkHttp + PROPFIND/MKCOL/PUT/DELETE）。
+ * 仅支持 HTTPS：明文 HTTP 下 Basic 凭据可被嗅探，已由网络安全策略禁止。
  */
 class WebDavClient(
     private val baseUrl: String,
@@ -40,9 +41,8 @@ class WebDavClient(
         .retryOnConnectionFailure(true)
         .build()
 
-    private val propfindBody: String =
-        """<?xml version="1.0" encoding="utf-8"?>
-<D:propfind xmlns:D="DAV:">
+    private val propfindBody: String = """<?xml version='1.0' encoding='utf-8'?>
+<D:propfind xmlns:D='DAV:'>
   <D:prop>
     <D:resourcetype/>
     <D:getcontentlength/>
@@ -50,24 +50,20 @@ class WebDavClient(
   </D:prop>
 </D:propfind>"""
 
-    override fun connect(): Boolean {
-        return try {
-            propfind("/")
-            true
-        } catch (e: Exception) {
-            false
-        }
+    override fun connect(): Boolean = try {
+        propfind("/")
+        true
+    } catch (e: Exception) {
+        false
     }
 
     override fun listFiles(path: String): List<RemoteFile> {
         val requested = normalize(path)
         val xml = propfind(requested)
-        val wantedPath = serverPath(requested).trimEnd('/')
+        val wantedPath = stripTrailingSlash(serverPath(requested))
         val out = ArrayList<RemoteFile>()
 
-        val doc = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
-            .newDocumentBuilder()
-            .parse(InputSource(StringReader(xml)))
+        val doc = newSecureDocumentBuilder().parse(InputSource(StringReader(xml)))
 
         val responses = doc.getElementsByTagNameNS("*", "response")
         for (i in 0 until responses.length) {
@@ -77,7 +73,7 @@ class WebDavClient(
             if (decoded == wantedPath || decoded.isEmpty()) continue
 
             val name = decoded.substringAfterLast('/')
-            if (name.isEmpty()) continue
+            if (!isSafeEntryName(name)) continue
 
             val isDir = resp.getElementsByTagNameNS("*", "collection").length > 0
             val size = firstText(resp, "getcontentlength")?.toLongOrNull() ?: 0L
@@ -86,7 +82,7 @@ class WebDavClient(
             out.add(
                 RemoteFile(
                     name = name,
-                    path = joinPath(requested, name),
+                    path = joinRemotePath(requested, name),
                     size = size,
                     isDirectory = isDir,
                     lastModified = modified
@@ -99,10 +95,24 @@ class WebDavClient(
 
     override fun openInputStream(path: String): InputStream {
         val req = auth(Request.Builder().url(urlOf(path)).get().build())
-        http.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) throw StorageException("WebDAV 下载失败: HTTP ${resp.code}")
-            val bytes = resp.body?.bytes() ?: ByteArray(0)
-            return ByteArrayInputStream(bytes)
+        val resp = http.newCall(req).execute()
+        if (!resp.isSuccessful) {
+            resp.close()
+            throw StorageException("WebDAV 下载失败: HTTP ${resp.code}")
+        }
+        val body = resp.body
+        if (body == null) {
+            resp.close()
+            return ByteArrayInputStream(ByteArray(0))
+        }
+        return object : FilterInputStream(body.byteStream()) {
+            override fun close() {
+                try {
+                    super.close()
+                } finally {
+                    resp.close()
+                }
+            }
         }
     }
 
@@ -117,8 +127,14 @@ class WebDavClient(
     }
 
     override fun createDirectory(path: String): Boolean {
+        // 资源已存在等价于成功；避免把服务端「不支持 MKCOL」的 405 误判为成功
+        try {
+            propfind(path)
+            return true
+        } catch (ignored: Exception) {
+        }
         val req = auth(Request.Builder().url(urlOf(path)).method("MKCOL", null).build())
-        http.newCall(req).execute().use { return it.isSuccessful || it.code == 405 }
+        http.newCall(req).execute().use { return it.isSuccessful }
     }
 
     override fun delete(path: String): Boolean {
@@ -134,6 +150,9 @@ class WebDavClient(
     // ---------------------------------------------------------------- helpers
 
     private fun propfind(path: String): String {
+        if (root.startsWith("http://", true)) {
+            throw StorageException("仅支持 HTTPS：明文 HTTP 会泄露 Basic 凭据")
+        }
         val req = auth(
             Request.Builder()
                 .url(urlOf(path))
@@ -164,7 +183,11 @@ class WebDavClient(
 
     private fun serverPath(path: String): String {
         val n = normalize(path)
-        val base = URI(root).path ?: ""
+        val base = try {
+            URI(root).path ?: ""
+        } catch (e: Exception) {
+            ""
+        }
         val baseNorm = if (base.isEmpty()) "" else "/" + base.trim('/')
         return if (n == "/") baseNorm.ifEmpty { "/" } else baseNorm + n
     }
@@ -185,15 +208,36 @@ class WebDavClient(
     }
 
     private companion object {
+        /** 解析远端返回的 XML 时禁用 DOCTYPE 与外部实体，避免 XXE。 */
+        fun newSecureDocumentBuilder(): DocumentBuilder {
+            val factory = DocumentBuilderFactory.newInstance().apply {
+                isNamespaceAware = true
+                try {
+                    setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
+                } catch (ignored: Exception) {
+                }
+                try {
+                    setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+                } catch (ignored: Exception) {
+                }
+                try {
+                    setFeature("http://xml.org/sax/features/external-general-entities", false)
+                } catch (ignored: Exception) {
+                }
+                try {
+                    setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+                } catch (ignored: Exception) {
+                }
+                isXIncludeAware = false
+                isExpandEntityReferences = false
+            }
+            return factory.newDocumentBuilder()
+        }
+
         fun normalize(p: String): String {
             val t = p.trim().replace('\\', '/')
             val noTail = t.trimEnd('/')
             return if (noTail.isEmpty()) "/" else noTail
-        }
-
-        fun joinPath(parent: String, name: String): String {
-            val p = normalize(parent)
-            return if (p == "/") "/$name" else "$p/$name"
         }
 
         fun stripTrailingSlash(s: String): String {
@@ -216,28 +260,26 @@ class WebDavClient(
             return if (sb.isEmpty()) "" else sb.toString()
         }
 
-        fun decodePercent(s: String): String {
-            return try {
-                URLDecoder.decode(s.replace("+", "%2B"), "UTF-8")
-            } catch (e: Exception) {
-                s
-            }
+        fun decodePercent(s: String): String = try {
+            URLDecoder.decode(s.replace("+", "%2B"), "UTF-8")
+        } catch (e: Exception) {
+            s
         }
 
         fun parseHttpDate(raw: String?): Long {
             if (raw.isNullOrEmpty()) return 0L
             val formats = listOf(
-                "EEE, dd MMM yyyy HH:mm:ss zzz",
-                "EEE, dd MMM yyyy HH:mm:ss Z",
-                "yyyy-MM-dd'T'HH:mm:ss'Z'"
+                "EEE, dd MMM yyyy HH:mm:ss zzz" to false,
+                "EEE, dd MMM yyyy HH:mm:ss Z" to false,
+                "yyyy-MM-dd'T'HH:mm:ss'Z'" to true
             )
-            for (f in formats) {
+            for ((f, utc) in formats) {
                 try {
                     val sdf = java.text.SimpleDateFormat(f, Locale.US)
                     sdf.isLenient = true
+                    if (utc) sdf.timeZone = TimeZone.getTimeZone("UTC")
                     return sdf.parse(raw)?.time ?: 0L
-                } catch (_: Exception) {
-                    // 尝试下一种格式
+                } catch (ignored: Exception) {
                 }
             }
             return 0L

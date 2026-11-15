@@ -12,7 +12,7 @@ android {
         minSdk = 24
         targetSdk = 34
         versionCode = 1
-        versionName = "1.0"
+        versionName = "1.1"
     }
 
     buildTypes {
@@ -63,6 +63,6 @@ dependencies {
     implementation("org.slf4j:slf4j-api:1.7.36")
     implementation("org.slf4j:slf4j-nop:1.7.36")
 
-    // SFTP
-    implementation("com.jcraft:jsch:0.1.55")
+    // SFTP: mwiede fork 取代已停止维护的 com.jcraft:jsch:0.1.55（包名保持 com.jcraft.jsch）
+    implementation("com.github.mwiede:jsch:0.2.26")
 }
