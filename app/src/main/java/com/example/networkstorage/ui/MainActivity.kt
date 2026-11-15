@@ -15,9 +15,7 @@ import android.widget.Toast
 import com.example.networkstorage.data.StorageAccount
 import com.example.networkstorage.data.StorageRepository
 
-/**
- * 首页：列出已配置的网络存储，支持添加、删除、进入浏览。
- */
+/** 首页：列出已配置的网络存储，支持添加、删除、进入浏览。 */
 class MainActivity : Activity() {
 
     private lateinit var repo: StorageRepository
@@ -28,6 +26,9 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         repo = StorageRepository(this)
+        if (repo.isMemoryOnly) {
+            toast("设备加密不可用：配置仅保存在内存，退出后丢失")
+        }
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 

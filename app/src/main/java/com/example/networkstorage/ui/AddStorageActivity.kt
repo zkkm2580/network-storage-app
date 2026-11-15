@@ -13,13 +13,13 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import com.example.networkstorage.client.IStorageClient
 import com.example.networkstorage.data.StorageAccount
 import com.example.networkstorage.data.StorageRepository
 import com.example.networkstorage.data.StorageType
+import java.io.File
 
-/**
- * 添加网络存储：选择协议 → 填写地址与凭据 → 后台连接校验 → 加密保存。
- */
+/** 添加网络存储：选择协议 → 填写地址与凭据 → 后台连接校验 → 加密保存。 */
 class AddStorageActivity : Activity() {
 
     private lateinit var repo: StorageRepository
@@ -41,6 +41,9 @@ class AddStorageActivity : Activity() {
         super.onCreate(savedInstanceState)
         repo = StorageRepository(this)
         title = "添加网络存储"
+        if (repo.isMemoryOnly) {
+            toast("设备加密不可用：配置仅保存在内存，退出后丢失")
+        }
 
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -58,7 +61,7 @@ class AddStorageActivity : Activity() {
         container.addView(typeSpinner)
 
         nameEt = field(container, "名称（备注）", "例如：家里的 NAS")
-        hostEt = field(container, "服务器地址", "SMB/SFTP 填 IP 或域名；WebDAV 填完整 URL")
+        hostEt = field(container, "服务器地址", "SMB/SFTP 填 IP 或域名；WebDAV 填完整 HTTPS URL")
         portEt = field(container, "端口（留空用默认）", "445 / 22 / 80 / 443")
         portEt.inputType = InputType.TYPE_CLASS_NUMBER
         userEt = field(container, "用户名", "可留空表示匿名/游客")
@@ -103,7 +106,7 @@ class AddStorageActivity : Activity() {
                 hostEt.hint = "https://nas.example.com:5006/dav"
                 pathLabel.text = "路径（WebDAV 请写在上面的 URL 里）"
                 pathEt.hint = "留空即可"
-                portEt.hint = "留空使用 URL 中的端口"
+                portEt.hint = "URL 未带端口时在这里指定"
             }
 
             StorageType.SMB -> {
@@ -128,8 +131,12 @@ class AddStorageActivity : Activity() {
             toast("请填写服务器地址")
             return
         }
-
         val type = types[typeSpinner.selectedItemPosition]
+        if (type == StorageType.WEBDAV && host.startsWith("http://", true)) {
+            toast("仅支持 HTTPS WebDAV：明文 HTTP 会泄露密码")
+            return
+        }
+
         val account = StorageAccount(
             id = StorageAccount.newId(),
             name = nameEt.text.toString().trim().ifEmpty { host },
@@ -146,10 +153,12 @@ class AddStorageActivity : Activity() {
         saveBtn.text = "正在连接…"
 
         Thread {
-            val client = account.createClient()
+            var usedClient: IStorageClient? = null
             var ok = false
             var detail = ""
             try {
+                val client = account.createClient(File(filesDir, "ssh"))
+                usedClient = client
                 ok = client.connect()
                 if (ok) {
                     val items = try {
@@ -165,28 +174,31 @@ class AddStorageActivity : Activity() {
                 detail = e.message ?: e.javaClass.simpleName
             } finally {
                 try {
-                    client.disconnect()
-                } catch (_: Exception) {
+                    usedClient?.disconnect()
+                } catch (ignored: Exception) {
                 }
             }
 
-            runOnUiThread {
-                saveBtn.isEnabled = true
-                saveBtn.text = "保存并测试连接"
-                if (ok) {
-                    repo.upsert(account)
-                    toast("保存成功：" + detail)
-                    finish()
-                } else {
-                    AlertDialog.Builder(this)
-                        .setTitle("连接失败")
-                        .setMessage(detail)
-                        .setPositiveButton("仍然保存") { _, _ ->
-                            repo.upsert(account)
-                            finish()
-                        }
-                        .setNegativeButton("返回修改", null)
-                        .show()
+            if (!isFinishing && !isDestroyed) {
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    saveBtn.isEnabled = true
+                    saveBtn.text = "保存并测试连接"
+                    if (ok) {
+                        repo.upsert(account)
+                        toast("保存成功：" + detail)
+                        finish()
+                    } else {
+                        AlertDialog.Builder(this)
+                            .setTitle("连接失败")
+                            .setMessage(detail)
+                            .setPositiveButton("仍然保存") { _, _ ->
+                                repo.upsert(account)
+                                finish()
+                            }
+                            .setNegativeButton("返回修改", null)
+                            .show()
+                    }
                 }
             }
         }.start()

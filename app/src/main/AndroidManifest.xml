@@ -4,12 +4,12 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- 不再全局放行明文流量：WebDAV 仅允许 HTTPS，避免 Basic 凭据被嗅探 -->
     <application
         android:allowBackup="false"
         android:label="网络存储"
         android:supportsRtl="true"
-        android:usesCleartextTraffic="true"
-        android:theme="@android:style/Theme.Material.Light.DarkActionBar">
+        android:theme="@style/AppTheme">
 
         <activity
             android:name=".ui.MainActivity"
