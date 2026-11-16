@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -60,3 +60,21 @@ jobs:
           name: network-storage-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      - name: Prepare release asset
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: cp app/build/outputs/apk/debug/app-debug.apk network-storage-debug.apk
+
+      - name: Publish Release (latest)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: NetworkStorage 最新版（debug APK）
+          body: |
+            由 GitHub Actions 自动构建，提交 `${{ github.sha }}`。
+            每次推送到 main 都会更新这里的 APK，直链固定、免登录、不会过期。
+            直链下载：https://github.com/zkkm2580/network-storage-app/releases/download/latest/network-storage-debug.apk
+          files: network-storage-debug.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

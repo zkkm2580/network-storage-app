@@ -3,6 +3,13 @@
 一个只做一件事的 Android 示例应用：**添加网络存储**，然后浏览、读写远程目录。
 参考 MT 管理器等文件管理器的「添加网络存储」交互，用最小可运行代码复刻其核心链路。
 
+## 下载 APK
+
+- **最新版（推荐）**：[Releases 页面](https://github.com/zkkm2580/network-storage-app/releases/latest)
+- **直链下载**：[network-storage-debug.apk](https://github.com/zkkm2580/network-storage-app/releases/download/latest/network-storage-debug.apk)
+
+每次推送到 `main` 且 CI 构建成功后，会自动更新名为 `latest` 的 Release，直链始终指向最新构建，无需登录、不会过期。
+
 ## 功能
 
 - **添加存储**：选择协议 → 填写地址 / 端口 / 账号 / 密码 / 共享名或路径 → 后台连接校验 → 加密保存
@@ -55,8 +62,8 @@ ui/BrowseActivity.kt       目录浏览 + 读写删（串行后台线程 + 生�
 gradle :app:assembleDebug
 ```
 
-或直接推送到 GitHub，由 `.github/workflows/build-apk.yml` 在云端编译，
-产物在 Actions 运行页面的 **Artifacts → network-storage-debug-apk** 下载。
+或直接推送到 GitHub，由 `.github/workflows/build-apk.yml` 在云端编译并发布到 Releases。
+临时构建产物也可在 Actions 运行页面的 **Artifacts → network-storage-debug-apk** 下载。
 
 ## 已知限制
 
@@ -67,6 +74,7 @@ gradle :app:assembleDebug
 - SFTP 删除目录使用 `rmdir`（要求目录为空），SMB 使用递归 `rmdir`
 - 未实现凭据导入 / 导出；`androidx.security:security-crypto:1.0.0` 的 `MasterKeys` 为遗留 API
 - 无 Gradle wrapper、无单元测试、R8 未开启、包名仍为示例 `com.example.networkstorage`
+- 发布的是 **debug 签名** APK，不能覆盖安装同包名的正式版
 
 ## 许可
 
