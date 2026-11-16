@@ -61,7 +61,7 @@ class AddStorageActivity : Activity() {
         container.addView(typeSpinner)
 
         nameEt = field(container, "名称（备注）", "例如：家里的 NAS")
-        hostEt = field(container, "服务器地址", "SMB/SFTP 填 IP 或域名；WebDAV 填完整 HTTPS URL")
+        hostEt = field(container, "服务器地址", "SMB/SFTP 填 IP 或域名；WebDAV 填完整 URL（http:// 或 https://）")
         portEt = field(container, "端口（留空用默认）", "445 / 22 / 80 / 443")
         portEt.inputType = InputType.TYPE_CLASS_NUMBER
         userEt = field(container, "用户名", "可留空表示匿名/游客")
@@ -103,7 +103,7 @@ class AddStorageActivity : Activity() {
     private fun applyTypeHints(type: StorageType) {
         when (type) {
             StorageType.WEBDAV -> {
-                hostEt.hint = "https://nas.example.com:5006/dav"
+                hostEt.hint = "http://nas.example.com:5006/dav"
                 pathLabel.text = "路径（WebDAV 请写在上面的 URL 里）"
                 pathEt.hint = "留空即可"
                 portEt.hint = "URL 未带端口时在这里指定"
@@ -132,10 +132,6 @@ class AddStorageActivity : Activity() {
             return
         }
         val type = types[typeSpinner.selectedItemPosition]
-        if (type == StorageType.WEBDAV && host.startsWith("http://", true)) {
-            toast("仅支持 HTTPS WebDAV：明文 HTTP 会泄露密码")
-            return
-        }
 
         val account = StorageAccount(
             id = StorageAccount.newId(),

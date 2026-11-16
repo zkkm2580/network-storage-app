@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  允许明文 HTTP：WebDAV 需要访问内网 http NAS。
+  注意：明文下 Basic 凭据以 Base64 传输，请仅在可信网络使用。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

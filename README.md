@@ -23,7 +23,7 @@
 
 | 协议 | 实现依赖 | 认证方式 | 默认端口 |
 |---|---|---|---|
-| WebDAV | OkHttp（PROPFIND / PUT / DELETE / MKCOL） | HTTP Basic，仅 HTTPS | 443 |
+| WebDAV | OkHttp（PROPFIND / PUT / DELETE / MKCOL） | HTTP Basic，支持 HTTP / HTTPS | 443 |
 | SMB2 / SMB3 | [smbj](https://github.com/hierynomus/smbj) | NTLM（可选域） | 445 |
 | SFTP | [mwiede/jsch](https://github.com/mwiede/jsch) | 密码 | 22 |
 
@@ -47,10 +47,13 @@ ui/BrowseActivity.kt       目录浏览 + 读写删（串行后台线程 + 生�
 
 ## 安全策略
 
-- **凭据**：Keystore 不可用时只退化为内存态（配置退出即丢失）并明确提示，绝不写入明文磁盘。
+- **凭据存储**：Keystore 不可用时只退化为内存态（配置退出即丢失）并明确提示，绝不写入明文磁盘。
 - **SFTP 主机密钥**：首次连接锁定服务器公钥并写入应用私有 `files/ssh/known_hosts`，
   之后以 `StrictHostKeyChecking=yes` 严格校验；密钥变更会直接拒绝连接（TOFU）。
-- **WebDAV**：全局不再放行明文流量，表单拒绝 `http://`；XML 解析禁用 DOCTYPE 与外部实体（防 XXE）。
+- **WebDAV 传输**：支持 `http://` 与 `https://`。明文 HTTP 便于访问内网 NAS，
+  但 Basic 凭据仅做 Base64 编码、文件内容也不加密，**请只在可信局域网内使用**。
+  网络安全配置见 `res/xml/network_security_config.xml`。
+- **XML 解析**：禁用 DOCTYPE 与外部实体，防 XXE。
 - **路径**：服务端返回的文件名经 `isSafeEntryName` 过滤，拒绝 `.` / `..` / 斜杠，避免路径穿越。
 - **传输**：三个客户端均改为流式读取，不再把整个文件读入内存。
 
@@ -70,6 +73,7 @@ gradle :app:assembleDebug
 - 上传为整体读入内存后写入，单次限制 16 MB；暂无断点续传、多线程传输与进度显示
 - 下载固定落到应用私有 `files/downloads/`，没有导出到公共存储、没有文件选择器另存
 - WebDAV 只支持 Basic 认证（未实现 Digest）；自签名 HTTPS 证书会被系统拒绝
+- 明文 HTTP 下凭据和内容均未加密，不要在公共 Wi-Fi 等不可信网络使用
 - SMB 仅访问单个共享，未实现共享枚举；SMB 修改时间依赖服务端返回，异常时回填 0
 - SFTP 删除目录使用 `rmdir`（要求目录为空），SMB 使用递归 `rmdir`
 - 未实现凭据导入 / 导出；`androidx.security:security-crypto:1.0.0` 的 `MasterKeys` 为遗留 API

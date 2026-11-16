@@ -24,7 +24,8 @@ import javax.xml.parsers.DocumentBuilderFactory
 
 /**
  * WebDAV 客户端（OkHttp + PROPFIND/MKCOL/PUT/DELETE）。
- * 仅支持 HTTPS：明文 HTTP 下 Basic 凭据可被嗅探，已由网络安全策略禁止。
+ * 支持 http:// 与 https://：明文 HTTP 便于访问内网 NAS，
+ * 但 Basic 凭据会以 Base64 明文传输，请仅在可信网络中使用。
  */
 class WebDavClient(
     private val baseUrl: String,
@@ -150,9 +151,6 @@ class WebDavClient(
     // ---------------------------------------------------------------- helpers
 
     private fun propfind(path: String): String {
-        if (root.startsWith("http://", true)) {
-            throw StorageException("仅支持 HTTPS：明文 HTTP 会泄露 Basic 凭据")
-        }
         val req = auth(
             Request.Builder()
                 .url(urlOf(path))

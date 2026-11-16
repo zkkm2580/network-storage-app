@@ -4,11 +4,13 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- 不再全局放行明文流量：WebDAV 仅允许 HTTPS，避免 Basic 凭据被嗅探 -->
+    <!-- 允许明文 HTTP：内网 NAS 常以 http 暴露 WebDAV，具体策略见 @xml/network_security_config -->
     <application
         android:allowBackup="false"
         android:label="网络存储"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:theme="@style/AppTheme">
 
         <activity
